@@ -16,7 +16,6 @@ class ControllerSelector<T> extends StatefulWidget {
     required this.selector,
     required this.builder,
     this.active,
-    this.observeWhenHidden = false,
     super.key,
   });
 
@@ -24,7 +23,6 @@ class ControllerSelector<T> extends StatefulWidget {
   final ControllerSelection<T> selector;
   final ControllerSelectionBuilder<T> builder;
   final bool Function(AppController controller)? active;
-  final bool observeWhenHidden;
 
   @override
   State<ControllerSelector<T>> createState() => _ControllerSelectorState<T>();
@@ -51,7 +49,6 @@ class _ControllerSelectorState<T> extends State<ControllerSelector<T>> {
   }
 
   void _handleControllerChanged() {
-    if (!widget.observeWhenHidden && !widget.controller.uiVisible) return;
     if (widget.active case final active? when !active(widget.controller)) {
       return;
     }

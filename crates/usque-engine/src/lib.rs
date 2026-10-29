@@ -94,8 +94,6 @@ mod disconnect_cleanup;
 
 #[cfg(target_os = "macos")]
 pub mod macos_ipc;
-#[cfg(target_os = "macos")]
-pub mod macos_runtime;
 
 #[cfg(target_os = "linux")]
 pub mod linux_ipc;
@@ -138,12 +136,6 @@ pub struct ControlServiceState {
     pub(crate) mutation_lock: Arc<Mutex<()>>,
     vault: Arc<dyn SecretVault>,
     pub(crate) data_plane: Arc<Mutex<Option<ActiveDataPlane>>>,
-    #[cfg(target_os = "macos")]
-    macos_provider: RwLock<Arc<dyn macos_runtime::ProviderControl>>,
-    #[cfg(target_os = "macos")]
-    macos_reserved: Mutex<Option<usque_macos_runtime::protocol::SessionKey>>,
-    #[cfg(target_os = "macos")]
-    macos_detaching: Arc<std::sync::atomic::AtomicBool>,
     disconnect_cleanup: Mutex<Option<tokio::task::JoinHandle<Result<(), ControlServiceError>>>>,
     disconnect_owners: Arc<Mutex<std::collections::VecDeque<disconnect_cleanup::ShutdownOwner>>>,
     disconnect_cleanup_failed: std::sync::atomic::AtomicBool,
@@ -527,12 +519,6 @@ impl ControlService {
                 mutation_lock: Arc::new(Mutex::new(())),
                 vault,
                 data_plane: Arc::new(Mutex::new(None)),
-                #[cfg(target_os = "macos")]
-                macos_provider: RwLock::new(Arc::new(macos_runtime::UnavailableProvider)),
-                #[cfg(target_os = "macos")]
-                macos_reserved: Mutex::new(None),
-                #[cfg(target_os = "macos")]
-                macos_detaching: Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 disconnect_cleanup: Mutex::new(None),
                 disconnect_owners: Arc::default(),
                 disconnect_cleanup_failed: std::sync::atomic::AtomicBool::new(false),
@@ -841,8 +827,6 @@ impl ControlService {
     /// Stops forwarding immediately, then waits for privileged platform state
     /// to be restored before the Engine process is allowed to exit.
     pub async fn shutdown(&self) -> Result<(), ControlServiceError> {
-        #[cfg(target_os = "macos")]
-        self.macos_detaching.store(false, Ordering::Release);
         self.gate_startup_cancel.lock().await.cancel();
         self.retire_continuous_startup().await;
         self.cancel_warp_jobs().await?;
@@ -853,8 +837,6 @@ impl ControlService {
         #[cfg(windows)]
         self.clear_windows_connection_intent().await;
         let _mutation = self.mutation_lock.lock().await;
-        #[cfg(target_os = "macos")]
-        self.stop_reserved_macos().await?;
         let retry_cleanup = self.data_plane.lock().await.is_none();
         let disconnect = self.disconnect_locked().await;
         if retry_cleanup {
@@ -2176,16 +2158,6 @@ impl ControlService {
         }) {
             self.reset_proton_selection();
         }
-        #[cfg(target_os = "macos")]
-        if let Some(snapshot) = self
-            .replace_macos_target(profile_id, &startup_cancel)
-            .await?
-        {
-            return Ok(snapshot);
-        }
-        #[cfg(target_os = "macos")]
-        self.prepare_macos_mode_switch(profile_id, &startup_cancel)
-            .await?;
         #[cfg(any(windows, target_os = "linux"))]
         if let Some(snapshot) = self
             .retry_protected_target(profile_id, &startup_cancel, false)
@@ -2376,13 +2348,6 @@ impl ControlService {
                 "encrypted WARP DNS is unavailable in this build",
             ));
         }
-        #[cfg(target_os = "macos")]
-        if profile.frontends.tunnel
-            && !macos_runtime::provider_permitted(self.macos_provider.read().await.as_ref())
-        {
-            return Err(ControlServiceError::OperatingModeUnavailable(profile.mode));
-        }
-        #[cfg(not(target_os = "macos"))]
         if profile.frontends.tunnel && !cfg!(any(windows, target_os = "linux")) {
             return Err(ControlServiceError::OperatingModeUnavailable(profile.mode));
         }
@@ -2476,16 +2441,6 @@ impl ControlService {
                 Ok(Some(windows_agent::AutomaticRecoveryObservation::Clean)) | Ok(None) => {}
             }
         }
-        #[cfg(target_os = "macos")]
-        let macos_identity = if profile.frontends.tunnel {
-            Some(
-                warp_identity
-                    .to_portable_secret_json()
-                    .map_err(|_| ControlServiceError::InvalidStoredIdentity)?,
-            )
-        } else {
-            None
-        };
         let pin_refresher: Arc<dyn EndpointPinRefresher> = Arc::new(VaultEndpointPinRefresher {
             profile_id,
             vault: Arc::clone(&self.vault),
@@ -2657,41 +2612,7 @@ impl ControlService {
                     }
                 }
             }
-            #[cfg(target_os = "macos")]
-            {
-                let portable = macos_identity
-                    .as_ref()
-                    .ok_or(ControlServiceError::InvalidStoredIdentity)?;
-                let identity = usque_core::parse_manual_warp_secret(portable)
-                    .map_err(|_| ControlServiceError::InvalidStoredIdentity)?;
-                match macos_runtime::MacVpnRuntime::start(
-                    macos_runtime::ProviderStart {
-                        provider: Arc::clone(&*self.macos_provider.read().await),
-                        vault: Arc::clone(&self.vault),
-                        cache_dir: self.cache_dir.clone(),
-                        session: self.reserve_macos_start().await?,
-                        detaching: Arc::clone(&self.macos_detaching),
-                    },
-                    &profile,
-                    &identity,
-                    selected_gate,
-                    &startup_cancel,
-                )
-                .await
-                {
-                    Ok(runtime) => {
-                        *self.macos_reserved.lock().await = None;
-                        ActiveRuntime::MacVpn(Box::new(runtime))
-                    }
-                    Err(error) => {
-                        if !startup_cancel.is_cancelled() {
-                            self.mark_connection_error(&error).await;
-                        }
-                        return Err(error);
-                    }
-                }
-            }
-            #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+            #[cfg(not(any(windows, target_os = "linux")))]
             {
                 unreachable!("unsupported VPN mode was rejected before identity loading")
             }
@@ -3006,8 +2927,6 @@ impl ControlService {
     }
 
     async fn disconnect(&self) -> Result<ConnectionSnapshot, ControlServiceError> {
-        #[cfg(target_os = "macos")]
-        self.macos_detaching.store(false, Ordering::Release);
         // The startup owner must finish/retain its platform guard before the
         // serialized teardown runs. Signal it without waiting for that lock.
         self.gate_startup_cancel.lock().await.cancel();
@@ -3016,8 +2935,6 @@ impl ControlService {
         #[cfg(windows)]
         self.clear_windows_connection_intent().await;
         let _mutation = self.mutation_lock.lock().await;
-        #[cfg(target_os = "macos")]
-        self.stop_reserved_macos().await?;
         *self.session_congestion_control.lock().await = None;
         *self.session_profile.lock().await = None;
         let retry_cleanup = self.data_plane.lock().await.is_none();
@@ -5321,14 +5238,9 @@ fn platform_vault() -> Arc<dyn SecretVault> {
     {
         Arc::new(usque_platform::WindowsCredentialVault)
     }
-    #[cfg(all(target_os = "macos", not(test)))]
+    #[cfg(target_os = "macos")]
     {
         Arc::new(usque_platform::MacOsKeychainVault)
-    }
-    #[cfg(all(target_os = "macos", test))]
-    {
-        // Unit/integration fixtures must never read or modify the user's vault.
-        Arc::new(tests::MemoryVault::default())
     }
     #[cfg(all(target_os = "linux", not(test)))]
     {
@@ -6157,12 +6069,6 @@ fn exit_probe_for_session(
     runtime: &ActiveRuntime,
     listener_auth: Option<&ProxyAuthCredentials>,
 ) -> Option<IpSbProbe> {
-    // Provider contract tests have no system VPN/filter. Even a diagnostic DNS
-    // lookup must not escape their loopback-only transport boundary.
-    #[cfg(all(test, target_os = "macos"))]
-    if matches!(runtime, ActiveRuntime::MacVpn(_)) {
-        return None;
-    }
     let loopback = runtime
         .listeners()
         .iter()

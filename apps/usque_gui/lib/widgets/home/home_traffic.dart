@@ -59,8 +59,7 @@ class HomeTrafficCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) => ControllerSelector<bool>(
     controller: controller,
-    observeWhenHidden: true,
-    selector: (app) => app.uiVisible && app.section == AppSection.home,
+    selector: (app) => app.section == AppSection.home,
     builder: (context, active) => ListenableBuilder(
       listenable: Listenable.merge(
         active ? [controller, controller.quality] : [],

@@ -27,10 +27,7 @@ impl PacketBatch {
     }
 
     pub(crate) fn single(packet: Bytes) -> Self {
-        let mut batch = Self {
-            packets: VecDeque::with_capacity(1),
-            bytes: 0,
-        };
+        let mut batch = Self::new();
         batch
             .push_back(packet)
             .expect("one valid IP packet fits the batch byte bound");

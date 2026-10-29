@@ -275,7 +275,12 @@ impl LinuxVpnRuntime {
                 "physical registration DNS unavailable".into(),
             ))
         })?;
-        let mut plan = desktop_tunnel_plan::tunnel_plan(profile, &identity, &registration, true);
+        let mut plan = desktop_tunnel_plan::tunnel_plan(
+            profile,
+            &identity,
+            &registration,
+            policy.is_enabled() || profile.needs_domain_routing(),
+        );
         let operation = Uuid::new_v4();
         let mut startup = StartupGuard {
             agent: agent.clone(),
@@ -440,22 +445,6 @@ impl LinuxVpnRuntime {
     pub(crate) fn update_traffic_policy(&mut self, disabled: bool) -> io::Result<()> {
         self.tunnel.update_traffic_policy(disabled);
         Ok(())
-    }
-    pub(crate) fn prepare_routing_update(
-        &self,
-        profile: &Profile,
-    ) -> io::Result<usque_transport::PreparedTrafficPolicyUpdate> {
-        self.tunnel
-            .prepare_routing_update(profile)
-            .map_err(io::Error::other)
-    }
-    pub(crate) fn publish_routing_update(
-        &mut self,
-        prepared: usque_transport::PreparedTrafficPolicyUpdate,
-    ) -> io::Result<()> {
-        self.tunnel
-            .publish_routing_update(prepared)
-            .map_err(io::Error::other)
     }
     pub(crate) async fn reconfigure_frontends(&mut self, profile: &Profile) -> io::Result<()> {
         self.tunnel
@@ -628,7 +617,12 @@ impl LinuxVpnRuntime {
             .map(|value| value.parse())
             .collect::<Result<Vec<std::net::SocketAddr>, _>>()
             .map_err(error)?;
-        let mut plan = desktop_tunnel_plan::tunnel_plan(profile, &identity, &registration, true);
+        let mut plan = desktop_tunnel_plan::tunnel_plan(
+            profile,
+            &identity,
+            &registration,
+            policy.is_enabled() || profile.needs_domain_routing(),
+        );
         validate_capabilities(&self.agent.capabilities().await?, profile)?;
         let state = self.agent.state().await?;
         let target = self.replacement_target.unwrap_or_else(Uuid::new_v4);

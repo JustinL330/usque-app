@@ -127,7 +127,7 @@ class NetworkQualityController extends ChangeNotifier {
 
   /// Legacy state counters are sampled only from full state events. Source
   /// history already owns its counters, including in quality-only replies.
-  void updateConnection(EngineSnapshot value, {bool observeQuality = true}) {
+  void updateConnection(EngineSnapshot value) {
     if (_disposed) return;
     final now = _now();
     final id = value.networkQuality?.connectionInstanceId;
@@ -147,7 +147,7 @@ class NetworkQualityController extends ChangeNotifier {
     if (value.phase == ConnectionPhase.disconnected ||
         value.phase == ConnectionPhase.error) {
       _clear(retire: true);
-    } else if (_enabled && _observationVisible && observeQuality) {
+    } else if (_enabled && _observationVisible) {
       if (clockRollback) {
         _clear(); // Wall-clock rollback cannot form a negative rate interval.
       }
@@ -187,7 +187,7 @@ class NetworkQualityController extends ChangeNotifier {
       }
     }
     _syncTimer();
-    if (_observationVisible) notifyListeners();
+    notifyListeners();
   }
 
   void accept(NetworkQualitySnapshot value) {
@@ -312,7 +312,7 @@ class NetworkQualityController extends ChangeNotifier {
     _streamUnavailable = value;
     if (value) _acceptAfter = _now();
     _counterEpoch++; // Do not compute an interval across a known stream outage.
-    if (_observationVisible) notifyListeners();
+    notifyListeners();
   }
 
   void togglePaused() {

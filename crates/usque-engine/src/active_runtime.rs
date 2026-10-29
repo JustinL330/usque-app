@@ -40,8 +40,6 @@ pub(crate) struct ActiveProxyRuntime {
 
 pub(crate) enum ActiveRuntime {
     Proxy(Box<ActiveProxyRuntime>),
-    #[cfg(target_os = "macos")]
-    MacVpn(Box<crate::macos_runtime::MacVpnRuntime>),
     #[cfg(windows)]
     Vpn(Box<crate::windows_agent::WindowsVpnRuntime>),
     #[cfg(target_os = "linux")]
@@ -50,20 +48,11 @@ pub(crate) enum ActiveRuntime {
     Harness(Box<HarnessRuntime>),
 }
 
-pub(crate) enum PreparedRoutingUpdate {
-    Runtime(usque_transport::PreparedTrafficPolicyUpdate),
-    #[cfg(test)]
-    Harness(usque_transport::PreparedRoutingUpdate),
-}
-
 #[cfg(test)]
 pub(crate) struct HarnessRuntime {
     pub(crate) timeline: usque_transport::ConnectionTelemetry,
     pub(crate) disable_quic: bool,
     pub(crate) traffic_policy_updates: u32,
-    pub(crate) routing_policy: usque_transport::GeoDirectPolicy,
-    pub(crate) fail_routing_prepare: bool,
-    pub(crate) fail_routing_publish: bool,
     pub(crate) path: RuntimePath,
     pub(crate) reconnect_count: u32,
     pub(crate) vpn: bool,
@@ -117,11 +106,6 @@ impl HarnessRuntime {
             reconnect_count,
             disable_quic: profile.disable_quic,
             traffic_policy_updates: 0,
-            routing_policy: usque_transport::GeoDirectPolicy::disabled()
-                .with_custom_rules(profile)
-                .expect("validated harness routing policy"),
-            fail_routing_prepare: false,
-            fail_routing_publish: false,
             vpn,
             listeners,
             socks5_listeners,
@@ -225,10 +209,6 @@ impl ActiveRuntime {
         if let Self::Vpn(runtime) = self {
             return runtime.target_committed();
         }
-        #[cfg(target_os = "macos")]
-        if let Self::MacVpn(runtime) = self {
-            return runtime.protection_active();
-        }
         false
     }
 
@@ -246,8 +226,6 @@ impl ActiveRuntime {
             Self::Vpn(runtime) => runtime.failure_retained(),
             #[cfg(test)]
             Self::Harness(runtime) => runtime.failure_retained,
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(runtime) => runtime.failure_retained(),
             _ => false,
         }
     }
@@ -273,11 +251,6 @@ impl ActiveRuntime {
                 runtime.http_listeners.clear();
                 Ok(())
             }
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(runtime) => {
-                runtime.fail_gate(_reason).await;
-                Ok(())
-            }
             _ => Err(ControlServiceError::InvalidRequest(
                 "only a VPN session can retain platform protection".into(),
             )),
@@ -287,8 +260,6 @@ impl ActiveRuntime {
     pub(crate) fn quiesce_final(&mut self) {
         match self {
             Self::Proxy(r) => r.runtime.quiesce_final(),
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(r) => r.quiesce_final(),
             #[cfg(any(windows, target_os = "linux"))]
             Self::Vpn(r) => r.quiesce_final(),
             #[cfg(test)]
@@ -302,8 +273,6 @@ impl ActiveRuntime {
     pub(crate) async fn fail_gate(&mut self, reason: usque_core::vpngate::GateFailure) {
         match self {
             Self::Proxy(r) => r.runtime.fail_gate(reason).await,
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(r) => r.fail_gate(reason).await,
             #[cfg(any(windows, target_os = "linux"))]
             Self::Vpn(r) => r.fail_gate(reason).await,
             #[cfg(test)]
@@ -330,15 +299,11 @@ impl ActiveRuntime {
             Self::Vpn(r) => r.internal_networks(),
             #[cfg(test)]
             Self::Harness(_) => None,
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(_) => None,
         }
     }
     pub(crate) fn gate_status(&self) -> usque_core::vpngate::GateStatus {
         match self {
             Self::Proxy(r) => r.runtime.gate_status(),
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(r) => r.gate_status(),
             #[cfg(any(windows, target_os = "linux"))]
             Self::Vpn(r) => r.gate_status(),
             #[cfg(test)]
@@ -371,8 +336,6 @@ impl ActiveRuntime {
     pub(crate) fn l4_snapshot(&self) -> Option<usque_core::L4Snapshot> {
         match self {
             Self::Proxy(runtime) => runtime.runtime.l4_snapshot(),
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(_) => None,
             #[cfg(any(windows, target_os = "linux"))]
             Self::Vpn(runtime) => runtime.l4_snapshot(),
             #[cfg(test)]
@@ -383,8 +346,6 @@ impl ActiveRuntime {
     pub(crate) fn cancel_immediately(&mut self) {
         match self {
             Self::Proxy(runtime) => runtime.runtime.cancel_immediately(),
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(runtime) => runtime.quiesce_final(),
             #[cfg(any(windows, target_os = "linux"))]
             Self::Vpn(runtime) => runtime.cancel_immediately(),
             #[cfg(test)]
@@ -398,8 +359,6 @@ impl ActiveRuntime {
     pub(crate) fn path(&self) -> RuntimePath {
         match self {
             Self::Proxy(runtime) => runtime.runtime.path(),
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(runtime) => runtime.path(),
             #[cfg(any(windows, target_os = "linux"))]
             Self::Vpn(runtime) => runtime.path(),
             #[cfg(test)]
@@ -410,8 +369,6 @@ impl ActiveRuntime {
     pub(crate) fn listeners(&self) -> &[SocketAddr] {
         match self {
             Self::Proxy(runtime) => runtime.runtime.listeners(),
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(runtime) => runtime.listeners(),
             #[cfg(any(windows, target_os = "linux"))]
             Self::Vpn(runtime) => runtime.listeners(),
             #[cfg(test)]
@@ -433,16 +390,12 @@ impl ActiveRuntime {
             Self::Vpn(runtime) => runtime.health(),
             #[cfg(test)]
             Self::Harness(runtime) => runtime.health(),
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(runtime) => runtime.health(),
         }
     }
 
     pub(crate) fn statistics(&self) -> TrafficSnapshot {
         match self {
             Self::Proxy(runtime) => runtime.runtime.statistics(),
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(runtime) => runtime.statistics(),
             #[cfg(any(windows, target_os = "linux"))]
             Self::Vpn(runtime) => runtime.statistics(),
             #[cfg(test)]
@@ -453,8 +406,6 @@ impl ActiveRuntime {
     pub(crate) fn connection_timeline(&self) -> ConnectionTimelineSnapshot {
         match self {
             Self::Proxy(runtime) => runtime.runtime.connection_timeline(),
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(runtime) => runtime.connection_timeline(),
             #[cfg(any(windows, target_os = "linux"))]
             Self::Vpn(runtime) => runtime.connection_timeline(),
             #[cfg(test)]
@@ -465,8 +416,6 @@ impl ActiveRuntime {
     pub(crate) fn request_recovery(&self) {
         match self {
             Self::Proxy(runtime) => runtime.runtime.request_recovery(),
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(_) => {}
             #[cfg(any(windows, target_os = "linux"))]
             Self::Vpn(runtime) => runtime.request_recovery(),
             #[cfg(test)]
@@ -479,8 +428,6 @@ impl ActiveRuntime {
     ) -> tokio::sync::watch::Receiver<NetworkQualitySnapshot> {
         match self {
             Self::Proxy(runtime) => runtime.runtime.subscribe_network_quality(),
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(runtime) => runtime.subscribe_network_quality(),
             #[cfg(any(windows, target_os = "linux"))]
             Self::Vpn(runtime) => runtime.subscribe_network_quality(),
             #[cfg(test)]
@@ -491,8 +438,6 @@ impl ActiveRuntime {
     pub(crate) fn proxy_performance(&self) -> Option<ProxyPerformanceSnapshot> {
         match self {
             Self::Proxy(runtime) => Some(runtime.runtime.performance()),
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(_) => None,
             #[cfg(any(windows, target_os = "linux"))]
             Self::Vpn(_) => None,
             #[cfg(test)]
@@ -508,8 +453,6 @@ impl ActiveRuntime {
     )> {
         match self {
             Self::Proxy(runtime) => Some(runtime.runtime.diagnostic_dns_context()),
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(_) => None,
             #[cfg(any(windows, target_os = "linux"))]
             Self::Vpn(runtime) => runtime.diagnostic_dns_context(),
             #[cfg(test)]
@@ -520,8 +463,6 @@ impl ActiveRuntime {
     pub(crate) fn failure(&self) -> Option<String> {
         match self {
             Self::Proxy(runtime) => runtime.runtime.failure(),
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(runtime) => runtime.failure(),
             #[cfg(any(windows, target_os = "linux"))]
             Self::Vpn(runtime) => runtime.failure(),
             #[cfg(test)]
@@ -532,8 +473,6 @@ impl ActiveRuntime {
     pub(crate) fn is_vpn(&self) -> bool {
         match self {
             Self::Proxy(_) => false,
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(_) => true,
             #[cfg(any(windows, target_os = "linux"))]
             Self::Vpn(_) => true,
             #[cfg(test)]
@@ -576,8 +515,6 @@ impl ActiveRuntime {
                 runtime.http_listeners(),
                 runtime.system_proxy_active(),
             ),
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(runtime) => (runtime.socks5_listeners(), runtime.http_listeners(), false),
             #[cfg(test)]
             Self::Harness(runtime) => (
                 runtime.socks5_listeners.as_slice(),
@@ -629,8 +566,6 @@ impl ActiveRuntime {
 
     pub(crate) async fn shutdown(&mut self) -> Result<(), ControlServiceError> {
         match self {
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(runtime) => runtime.shutdown().await,
             Self::Proxy(runtime) => {
                 #[cfg(windows)]
                 let system_proxy_result = match runtime.system_proxy.as_mut() {
@@ -685,8 +620,6 @@ impl ActiveRuntime {
     pub(crate) fn ads_revision(&self) -> String {
         match self {
             Self::Proxy(r) => r.runtime.ads_revision(),
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(_) => String::new(),
             #[cfg(any(windows, target_os = "linux"))]
             Self::Vpn(r) => r.ads_revision(),
             #[cfg(test)]
@@ -696,83 +629,10 @@ impl ActiveRuntime {
     pub(crate) fn update_ads_enabled(&self, enabled: bool) {
         match self {
             Self::Proxy(r) => r.runtime.update_ads_enabled(enabled),
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(_) => {}
             #[cfg(any(windows, target_os = "linux"))]
             Self::Vpn(r) => r.update_ads_enabled(enabled),
             #[cfg(test)]
             Self::Harness(_) => {}
-        }
-    }
-
-    pub(crate) fn prepare_routing_update(
-        &self,
-        profile: &Profile,
-    ) -> Result<PreparedRoutingUpdate, ControlServiceError> {
-        match self {
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(_) => Err(ControlServiceError::FeatureUnavailable(
-                "macOS routing updates require provider replacement",
-            )),
-            Self::Proxy(runtime) => runtime
-                .runtime
-                .prepare_routing_update(profile)
-                .map(PreparedRoutingUpdate::Runtime)
-                .map_err(ControlServiceError::Transport),
-            #[cfg(any(windows, target_os = "linux"))]
-            Self::Vpn(runtime) => runtime
-                .prepare_routing_update(profile)
-                .map(PreparedRoutingUpdate::Runtime)
-                .map_err(map_platform_vpn_error),
-            #[cfg(test)]
-            Self::Harness(runtime) => {
-                if runtime.fail_routing_prepare {
-                    return Err(ControlServiceError::InvalidRequest(
-                        "routing preparation failed".into(),
-                    ));
-                }
-                runtime
-                    .routing_policy
-                    .prepare_routing_update(profile)
-                    .map(PreparedRoutingUpdate::Harness)
-                    .map_err(ControlServiceError::profile_configuration)
-            }
-        }
-    }
-
-    pub(crate) fn publish_routing_update(
-        &mut self,
-        prepared: PreparedRoutingUpdate,
-    ) -> Result<(), ControlServiceError> {
-        match (self, prepared) {
-            #[cfg(target_os = "macos")]
-            (Self::MacVpn(_), _) => Err(ControlServiceError::FeatureUnavailable(
-                "macOS routing updates require provider replacement",
-            )),
-            (Self::Proxy(runtime), PreparedRoutingUpdate::Runtime(prepared)) => runtime
-                .runtime
-                .publish_routing_update(prepared)
-                .map_err(ControlServiceError::Transport),
-            #[cfg(any(windows, target_os = "linux"))]
-            (Self::Vpn(runtime), PreparedRoutingUpdate::Runtime(prepared)) => runtime
-                .publish_routing_update(prepared)
-                .map_err(map_platform_vpn_error),
-            #[cfg(test)]
-            (Self::Harness(runtime), PreparedRoutingUpdate::Harness(prepared)) => {
-                if runtime.fail_routing_publish {
-                    return Err(ControlServiceError::InvalidRequest(
-                        "routing publication failed".into(),
-                    ));
-                }
-                runtime
-                    .routing_policy
-                    .publish_routing_update(prepared)
-                    .map_err(|error| ControlServiceError::InvalidRequest(error.to_string()))
-            }
-            #[cfg(test)]
-            _ => Err(ControlServiceError::InvalidRequest(
-                "routing runtime changed during preparation".into(),
-            )),
         }
     }
 
@@ -782,12 +642,6 @@ impl ActiveRuntime {
     ) -> Result<(), ControlServiceError> {
         match self {
             Self::Proxy(runtime) => runtime.runtime.update_traffic_policy(disable_quic),
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(_) => {
-                return Err(ControlServiceError::FeatureUnavailable(
-                    "macOS live traffic policy requires provider replacement",
-                ));
-            }
             #[cfg(any(windows, target_os = "linux"))]
             Self::Vpn(runtime) => runtime
                 .update_traffic_policy(disable_quic)
@@ -806,8 +660,6 @@ impl ActiveRuntime {
         profile: &Profile,
     ) -> Result<(), ControlServiceError> {
         match self {
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(runtime) => runtime.reconfigure_frontends(profile).await?,
             Self::Proxy(runtime) => {
                 runtime
                     .runtime
@@ -834,16 +686,6 @@ impl ActiveRuntime {
         profile: &Profile,
     ) -> Result<(), ControlServiceError> {
         match self {
-            #[cfg(target_os = "macos")]
-            Self::MacVpn(_) => {
-                if profile.proxy.system_proxy {
-                    Err(ControlServiceError::FeatureUnavailable(
-                        "macOS system proxy integration is not verified",
-                    ))
-                } else {
-                    Ok(())
-                }
-            }
             Self::Proxy(runtime) => {
                 #[cfg(windows)]
                 {
